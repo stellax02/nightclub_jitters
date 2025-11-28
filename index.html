@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Nightclub Jitters</title>
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100vw;
+        height: 100vh;
+        overscroll-behavior: none;
+        overflow: hidden;
+      }
+
+      body {
+        background: #020617;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+          "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+
+      .frame {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .canvas-wrapper {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        max-width: 100vw;
+        max-height: 100vh;
+        aspect-ratio: 16 / 9;
+        margin: 0;
+        border-radius: 0;
+        border: none;
+        box-shadow: none;
+        background: #020617;
+        overflow: hidden;
+      }
+
+      canvas#field {
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+      }
+
+      .controls {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <div class="canvas-wrapper">
+        <canvas id="field"></canvas>
+      </div>
+
+      <!-- hidden, just so JS has targets -->
+      <div class="controls">
+        <button id="reseed-btn"></button>
+        <button id="pause-btn"></button>
+        <button id="shot-btn"></button>
+      </div>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("field");
+      const ctx = canvas.getContext("2d");
+
+      const USE_COLLISIONS = true;
+      const DRAW_COLLISION_LINES = true;
+
+      const SPLASH_DURATION_SECONDS = 10;
+      let lastSeedTime = 0;
+      let splashEndTime = 0;
+      let globalTime = 0;
+      let autoReseedInterval = 120000;
+
+      function scheduleNextSeed() {
+        const base = 120000; // 2 min
+        const jitter = 30000; // ±30s
+        autoReseedInterval = base + (Math.random() - 0.5) * 2 * jitter;
+      }
+
+      let PARTICLE_COUNT = 305;
+      let particles = [];
+      let animationId = null;
+      let isPaused = false;
+      let animateRef = null;
+
+      // no jitter universe, smoother nightclub motion
+      let DISPERSION = 0.2;
+      let SPEED_SCALE = 0.55; // slow motion
+      let JITTER_SCALE = 0.0;
+      const DAMPING = 0.99;
+
+      // bigger blobs, fewer tiny dots
+      const MIN_SIZE_FACTOR = 0.9;
+      const MAX_SIZE_FACTOR = 3.2;
+      const TRAIL_ALPHA_MIN = 0.2;
+      const TRAIL_ALPHA_MAX = 0.75;
+
+      let paletteMode = 0;
+      let paletteBaseHue = 200;
+      let paletteSat = 95;
+      let paletteLight = 60;
+
+      let bgHue = 220;
+      let bgSat = 35;
+      let bgLight = 8;
+
+      function setupCanvas() {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        return {
+          width: rect.width,
+          height: rect.height,
+        };
+      }
+
+      function reseedUniverse() {
+        DISPERSION = 0.08 + Math.random() * 0.14;
+        SPEED_SCALE = 0.55; // keep slow motion on reseed
+        JITTER_SCALE = 0.0;
+        PARTICLE_COUNT = 305;
+      }
+
+      function reseedBackground() {
+        const base = ((paletteBaseHue % 360) + 360) % 360;
+        const offset = Math.random() * 40 - 20;
+        bgHue = base + offset;
+        bgSat = 20 + Math.random() * 25;
+        bgLight = 6 + Math.random() * 6;
+      }
+
+      // Miami-only palettes
+      function reseedPalette() {
+        const variant = Math.floor(Math.random() * 4);
+
+        switch (variant) {
+          case 0:
+            paletteMode = 100; // Ocean Drive
+            paletteBaseHue = 190;
+            paletteSat = 90;
+            paletteLight = 65;
+            break;
+          case 1:
+            paletteMode = 101; // Neon Flamingo
+            paletteBaseHue = 305;
+            paletteSat = 90;
+            paletteLight = 70;
+            break;
+          case 2:
+            paletteMode = 102; // Hotel Pool at 3AM
+            paletteBaseHue = 195;
+            paletteSat = 92;
+            paletteLight = 62;
+            break;
+          default:
+            paletteMode = 103; // Rainy Night Downtown
+            paletteBaseHue = 185;
+            paletteSat = 80;
+            paletteLight = 60;
+            break;
+        }
+
+        reseedBackground();
+      }
+
+      function pickHue() {
+        switch (paletteMode) {
+          case 100: {
+            const r = Math.random();
+            if (r < 0.65) return 170 + (Math.random() * 20 - 10);
+            if (r < 0.95) return 305 + (Math.random() * 20 - 10);
+            return 40 + (Math.random() * 20 - 10);
+          }
+          case 101: {
+            const r = Math.random();
+            if (r < 0.6) return 310 + (Math.random() * 20 - 10);
+            if (r < 0.9) return 175 + (Math.random() * 20 - 10);
+            return 20 + (Math.random() * 20 - 10);
+          }
+          case 102: {
+            const r = Math.random();
+            if (r < 0.7) return 190 + (Math.random() * 20 - 10);
+            if (r < 0.9) return 310 + (Math.random() * 20 - 10);
+            return 220 + (Math.random() * 20 - 10);
+          }
+          case 103: {
+            const r = Math.random();
+            if (r < 0.5) return 180 + (Math.random() * 20 - 10);
+            if (r < 0.85) return 310 + (Math.random() * 20 - 10);
+            return 220 + (Math.random() * 20 - 10);
+          }
+          default:
+            return Math.random() * 360;
+        }
+      }
+
+      function clearBackground(width, height) {
+        ctx.save();
+
+        const grad = ctx.createLinearGradient(0, 0, 0, height);
+        grad.addColorStop(
+          0,
+          `hsl(${bgHue}, ${bgSat}%, ${Math.max(0, bgLight - 2)}%)`
+        );
+        grad.addColorStop(
+          0.5,
+          `hsl(${bgHue + 20}, ${bgSat + 10}%, ${Math.min(100, bgLight + 6)}%)`
+        );
+        grad.addColorStop(
+          1,
+          `hsl(${bgHue - 10}, ${bgSat + 15}%, ${Math.min(100, bgLight + 4)}%)`
+        );
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, width, height);
+
+        const glow = ctx.createRadialGradient(
+          width * 0.75,
+          height * 0.5,
+          0,
+          width * 0.75,
+          height * 0.5,
+          width * 0.9
+        );
+        glow.addColorStop(
+          0,
+          `hsla(${(bgHue + 30) % 360}, ${Math.min(
+            100,
+            bgSat + 40
+          )}%, ${Math.min(100, bgLight + 30)}%, 0.35)`
+        );
+        glow.addColorStop(1, `hsla(${bgHue}, ${bgSat}%, ${bgLight}%, 0)`);
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, width, height);
+
+        const h1 = height * 0.55;
+        const h2 = height * 0.7;
+        const horizon = ctx.createLinearGradient(0, h1, 0, h2);
+        horizon.addColorStop(
+          0,
+          `hsla(${(bgHue + 10) % 360}, ${bgSat + 30}%, ${bgLight + 28}%, 0)`
+        );
+        horizon.addColorStop(
+          0.5,
+          `hsla(${(bgHue + 10) % 360}, ${bgSat + 35}%, ${bgLight + 32}%, 0.35)`
+        );
+        horizon.addColorStop(
+          1,
+          `hsla(${(bgHue + 10) % 360}, ${bgSat + 30}%, ${bgLight + 28}%, 0)`
+        );
+        ctx.fillStyle = horizon;
+        ctx.fillRect(0, h1, width, h2 - h1);
+
+        ctx.globalAlpha = 0.28;
+        ctx.strokeStyle = `hsla(${(bgHue + 40) % 360}, ${bgSat + 30}%, ${
+          bgLight + 45
+        }%, 0.9)`;
+        ctx.lineWidth = height * 0.002;
+        for (let i = 0; i < 4; i++) {
+          const y = height * (0.18 + i * 0.15) + Math.random() * height * 0.03;
+          ctx.beginPath();
+          ctx.moveTo(width * 0.02, y);
+          ctx.lineTo(width * 0.4, y);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+
+        const vignette = ctx.createRadialGradient(
+          width * 0.5,
+          height * 0.5,
+          width * 0.3,
+          width * 0.5,
+          height * 0.5,
+          width * 0.9
+        );
+        vignette.addColorStop(0, "rgba(0,0,0,0)");
+        vignette.addColorStop(1, "rgba(0,0,0,0.85)");
+        ctx.globalCompositeOperation = "multiply";
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.globalCompositeOperation = "source-over";
+        ctx.restore();
+      }
+
+      // imperfect mesh overlay (always visible)
+      function drawMeshOverlay(width, height) {
+        ctx.save();
+        ctx.globalCompositeOperation = "soft-light";
+        ctx.globalAlpha = 0.22;
+        ctx.strokeStyle = `hsla(${(bgHue + 55) % 360}, ${bgSat + 20}%, ${
+          bgLight + 55
+        }%, 0.9)`;
+        ctx.lineWidth = height * 0.0012;
+
+        const yStep = height / 16;
+        const xStep = width / 22;
+
+        // horizontal lines
+        for (let y = height * 0.05; y <= height * 0.98; y += yStep) {
+          const jitter = (Math.random() - 0.5) * height * 0.02;
+          ctx.beginPath();
+          ctx.moveTo(0, y + jitter);
+          ctx.lineTo(width, y + jitter);
+          ctx.stroke();
+        }
+
+        // vertical lines
+        for (let x = width * 0.05; x <= width * 0.98; x += xStep) {
+          const jitter = (Math.random() - 0.5) * width * 0.02;
+          ctx.beginPath();
+          ctx.moveTo(x + jitter, 0);
+          ctx.lineTo(x + jitter, height);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      }
+
+      // more organic start, splatters can reach corners
+      function createParticle(width, height) {
+        const centerX = width / 2;
+        const centerY = height / 2;
+
+        // --- SPAWN: mostly around centre, some on edges ---
+        let x, y;
+        const spawnR = Math.random();
+
+        if (spawnR < 0.8) {
+          // organic blob around centre (larger radius → can radiate out)
+          const r =
+            Math.pow(Math.random(), 1.1) * Math.max(width, height) * 0.35;
+          const a = Math.random() * Math.PI * 2;
+          x = centerX + Math.cos(a) * r;
+          y = centerY + Math.sin(a) * r;
+        } else {
+          // some particles spawn on edges / near corners
+          const edge = Math.floor(Math.random() * 4);
+          if (edge === 0) {
+            // top edge
+            x = Math.random() * width;
+            y = 0;
+          } else if (edge === 1) {
+            // bottom edge
+            x = Math.random() * width;
+            y = height;
+          } else if (edge === 2) {
+            // left edge
+            x = 0;
+            y = Math.random() * height;
+          } else {
+            // right edge
+            x = width;
+            y = Math.random() * height;
+          }
+        }
+
+        const baseSpeed = (1.2 + Math.random() * 1.5) * (width / 400);
+        const speed = baseSpeed * SPEED_SCALE;
+
+        let vx, vy;
+        const dirChoice = Math.random();
+
+        if (dirChoice < 0.65) {
+          // push outward from the centre → organic splatter
+          const dx = x - centerX;
+          const dy = y - centerY;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          vx = (dx / len) * speed;
+          vy = (dy / len) * speed;
+        } else if (dirChoice < 0.9) {
+          // aim towards a random corner → ensure some hits there
+          const corners = [
+            [0, 0],
+            [width, 0],
+            [0, height],
+            [width, height],
+          ];
+          const [tx, ty] = corners[Math.floor(Math.random() * corners.length)];
+          const dx = tx - x;
+          const dy = ty - y;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          vx = (dx / len) * speed * 1.15;
+          vy = (dy / len) * speed * 1.15;
+        } else {
+          // free random direction
+          const angle = Math.random() * Math.PI * 2;
+          vx = Math.cos(angle) * speed;
+          vy = Math.sin(angle) * speed;
+        }
+
+        // bias toward mid/large sizes → blended look, fewer tiny dots
+        const tSize = Math.random();
+        const sizeFactor =
+          MIN_SIZE_FACTOR +
+          (MAX_SIZE_FACTOR - MIN_SIZE_FACTOR) * Math.pow(tSize, 0.6);
+
+        const baseSize = width * 0.018;
+
+        const rot = Math.random() * Math.PI * 2;
+        const aspect = 0.9 + Math.random() * 0.2;
+        const baseAlpha =
+          TRAIL_ALPHA_MIN + Math.random() * (TRAIL_ALPHA_MAX - TRAIL_ALPHA_MIN);
+
+        const irregular = Math.random() < 0.7; // most are painterly blobs
+        const spikes = 10 + Math.floor(Math.random() * 10);
+        const wobble = 0.08 + Math.random() * 0.15;
+
+        return {
+          x,
+          y,
+          vx,
+          vy,
+          hue: pickHue(),
+          size: baseSize * sizeFactor,
+          life: 0,
+          maxLife: 260 + Math.random() * 260,
+          rot,
+          aspect,
+          baseAlpha,
+          irregular,
+          spikes,
+          wobble,
+        };
+      }
+
+      function initParticles(width, height) {
+        particles = new Array(PARTICLE_COUNT)
+          .fill(null)
+          .map(() => createParticle(width, height));
+      }
+
+      // bright, almost-white tangents
+      function handleCollisions(width, height) {
+        if (!USE_COLLISIONS) return;
+
+        const maxDist = width * 0.05;
+        const maxDist2 = maxDist * maxDist;
+
+        let lineSoftness = 1.2;
+        if (globalTime > 60) {
+          lineSoftness = 1.2;
+        }
+
+        if (DRAW_COLLISION_LINES) {
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+        }
+
+        for (let i = 0; i < particles.length; i++) {
+          const p = particles[i];
+          for (let j = i + 1; j < particles.length; j++) {
+            const q = particles[j];
+
+            let dx = p.x - q.x;
+            let dy = p.y - q.y;
+
+            if (dx > width / 2) dx -= width;
+            if (dx < -width / 2) dx += width;
+            if (dy > height / 2) dy -= height;
+            if (dy < -height / 2) dy += height;
+
+            const dist2 = dx * dx + dy * dy;
+            if (dist2 >= maxDist2) continue;
+
+            const dist = Math.sqrt(dist2) || 0.001;
+            const t = 1 - dist / maxDist;
+            if (t <= 0) continue;
+
+            const alpha = t * 0.38; // stronger glow
+            if (alpha <= 0) continue;
+
+            if (DRAW_COLLISION_LINES) {
+              const lineHue = (p.hue + q.hue) * 0.5;
+              const lineSat = Math.max(8, paletteSat * 0.4); // desaturate → near white
+              const lineLight = 93; // almost white
+
+              ctx.strokeStyle = `hsl(${lineHue}, ${lineSat}%, ${lineLight}%)`;
+              ctx.lineWidth = t * (width / 800) * 1.6 * lineSoftness;
+              ctx.globalAlpha = alpha * lineSoftness;
+              ctx.beginPath();
+              ctx.moveTo(p.x, p.y);
+              ctx.lineTo(q.x, q.y);
+              ctx.stroke();
+              ctx.globalAlpha = 1;
+            }
+
+            const force = t * 0.08;
+            const nx = dx / dist;
+            const ny = dy / dist;
+            p.vx += nx * force;
+            p.vy += ny * force;
+            q.vx -= nx * force;
+            q.vy -= ny * force;
+
+            if (Math.random() < t * 0.5) {
+              if (Math.random() < 0.5) {
+                q.hue = p.hue;
+              } else {
+                p.hue = q.hue;
+              }
+            }
+          }
+        }
+
+        if (DRAW_COLLISION_LINES) {
+          ctx.restore();
+        }
+      }
+
+      function startAnimation(reseedPal = true) {
+        if (animationId !== null) {
+          cancelAnimationFrame(animationId);
+          animationId = null;
+        }
+
+        const { width, height } = setupCanvas();
+
+        if (reseedPal) {
+          reseedUniverse();
+          reseedPalette();
+        }
+
+        initParticles(width, height);
+        clearBackground(width, height);
+
+        isPaused = false;
+
+        scheduleNextSeed();
+        lastSeedTime = performance.now();
+        splashEndTime = lastSeedTime + SPLASH_DURATION_SECONDS * 1000;
+        globalTime = 0;
+        let lastFrameTime = null;
+
+        function animate(now) {
+          if (isPaused) {
+            animationId = null;
+            return;
+          }
+
+          if (!lastFrameTime) lastFrameTime = now;
+          const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+          lastFrameTime = now;
+          globalTime += dt;
+
+          if (now - lastSeedTime >= autoReseedInterval) {
+            reseed();
+            return;
+          }
+
+          const inSplash = now < splashEndTime;
+
+          const rect = canvas.getBoundingClientRect();
+          const width = rect.width;
+          const height = rect.height;
+
+          particles.forEach((particle, idx) => {
+            // no per-frame jitter – clean trajectories
+
+            if (inSplash) {
+              const cx = width / 2;
+              const cy = height / 2;
+              const dx = particle.x - cx;
+              const dy = particle.y - cy;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+              const push = (width / 800) * 0.003; // softer impulse → slow motion
+              particle.vx += (dx / dist) * push;
+              particle.vy += (dy / dist) * push;
+            }
+
+            const breezeMag = (width / 800) * 0.003; // gentler breeze
+            const breeze = Math.sin(globalTime * 0.08) * breezeMag;
+            particle.vx += breeze;
+
+            particle.vx *= DAMPING;
+            particle.vy *= DAMPING;
+
+            particle.x += particle.vx;
+            particle.y += particle.vy;
+
+            if (particle.x < 0) particle.x += width;
+            if (particle.x > width) particle.x -= width;
+            if (particle.y < 0) particle.y += height;
+            if (particle.y > height) particle.y -= height;
+
+            particle.life += 1;
+
+            if (particle.life > particle.maxLife) {
+              particles[idx] = createParticle(width, height);
+              particle = particles[idx];
+            }
+
+            const alpha = particle.baseAlpha * (0.7 + Math.random() * 0.6);
+            let radius = particle.size * (0.85 + Math.random() * 0.4);
+
+            // avoid tiny crisp dots: enforce a minimum visual radius
+            const minRadius = width * 0.012;
+            if (radius < minRadius) radius = minRadius;
+
+            ctx.save();
+            ctx.translate(particle.x, particle.y);
+            ctx.rotate(particle.rot);
+            ctx.scale(particle.aspect, 1);
+
+            // --- FEATHERED / SPLATTERY BLOBS ---
+
+            if (particle.irregular) {
+              const gradRadius = radius * 1.25;
+              const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, gradRadius);
+              grad.addColorStop(
+                0,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${
+                  alpha * 0.8
+                })`
+              );
+              grad.addColorStop(
+                0.35,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${
+                  alpha * 0.55
+                })`
+              );
+              grad.addColorStop(
+                0.75,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${
+                  alpha * 0.15
+                })`
+              );
+              grad.addColorStop(
+                1,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, 0)`
+              );
+              ctx.fillStyle = grad;
+
+              ctx.beginPath();
+              const spikeCount = particle.spikes;
+              const wobble = particle.wobble;
+              for (let k = 0; k <= spikeCount; k++) {
+                const t = (k / spikeCount) * Math.PI * 2;
+                const r = radius * (1 - wobble + Math.random() * wobble * 2);
+                const px = Math.cos(t) * r;
+                const py = Math.sin(t) * r;
+                if (k === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+              }
+              ctx.closePath();
+              ctx.fill();
+            } else {
+              const grad = ctx.createRadialGradient(
+                0,
+                0,
+                0,
+                0,
+                0,
+                radius * 1.2
+              );
+              grad.addColorStop(
+                0,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${
+                  alpha * 0.8
+                })`
+              );
+              grad.addColorStop(
+                0.45,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${
+                  alpha * 0.5
+                })`
+              );
+              grad.addColorStop(
+                0.85,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${
+                  alpha * 0.12
+                })`
+              );
+              grad.addColorStop(
+                1,
+                `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, 0)`
+              );
+              ctx.fillStyle = grad;
+              ctx.beginPath();
+              ctx.arc(0, 0, radius, 0, Math.PI * 2);
+              ctx.fill();
+            }
+
+            ctx.restore();
+
+            // --- SOFT COLORED HALO (feathery style from trail-painting) ---
+            const haloRadius = radius * 2.0;
+            const haloGradient = ctx.createRadialGradient(
+              particle.x,
+              particle.y,
+              radius * 0.8, // start near edge of the main blob
+              particle.x,
+              particle.y,
+              haloRadius
+            );
+            const haloAlpha = alpha * 0.45;
+
+            haloGradient.addColorStop(
+              0,
+              `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${haloAlpha})`
+            );
+            haloGradient.addColorStop(
+              0.7,
+              `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, ${
+                haloAlpha * 0.35
+              })`
+            );
+            haloGradient.addColorStop(
+              1,
+              `hsla(${particle.hue}, ${paletteSat}%, ${paletteLight}%, 0)`
+            );
+
+            ctx.fillStyle = haloGradient;
+            ctx.beginPath();
+            ctx.arc(particle.x, particle.y, haloRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            particle.hue = (particle.hue + 0.035) % 360;
+          });
+
+          handleCollisions(width, height);
+
+          // background mesh overlay – always visible
+          drawMeshOverlay(width, height);
+
+          animationId = requestAnimationFrame(animate);
+        }
+
+        animateRef = animate;
+        animationId = requestAnimationFrame(animate);
+      }
+
+      function reseed() {
+        startAnimation(true);
+      }
+
+      function togglePause() {
+        isPaused = !isPaused;
+        if (!isPaused && !animationId && animateRef) {
+          animationId = requestAnimationFrame(animateRef);
+        }
+      }
+
+      function screenshot() {
+        // 4K 16:9 export
+        const EXPORT_WIDTH = 3840;
+        const EXPORT_HEIGHT = 2160; // 3840 * 9 / 16
+
+        const exportCanvas = document.createElement("canvas");
+        exportCanvas.width = EXPORT_WIDTH;
+        exportCanvas.height = EXPORT_HEIGHT;
+        const exportCtx = exportCanvas.getContext("2d");
+
+        // fill with the current background color
+        exportCtx.fillStyle = `hsl(${bgHue}, ${bgSat}%, ${bgLight}%)`;
+        exportCtx.fillRect(0, 0, EXPORT_WIDTH, EXPORT_HEIGHT);
+
+        // draw the current canvas scaled into 16:9
+        exportCtx.drawImage(canvas, 0, 0, EXPORT_WIDTH, EXPORT_HEIGHT);
+
+        // filename for the open call
+        const link = document.createElement("a");
+        link.download = "Nightclub_Jitters_01.png";
+        link.href = exportCanvas.toDataURL("image/png");
+        link.click();
+      }
+
+      document.getElementById("reseed-btn").addEventListener("click", reseed);
+      document
+        .getElementById("pause-btn")
+        .addEventListener("click", togglePause);
+      document.getElementById("shot-btn").addEventListener("click", screenshot);
+
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "r" || e.key === "R") {
+          reseed();
+        } else if (e.key === "s" || e.key === "S") {
+          screenshot();
+        } else if (e.key === "p" || e.key === "P") {
+          togglePause();
+        }
+      });
+
+      window.addEventListener("resize", () => {
+        startAnimation(false);
+      });
+
+      startAnimation(true);
+    </script>
+  </body>
+</html>
