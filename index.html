@@ -64,9 +64,41 @@
       .controls {
         display: none !important;
       }
+
+       .rotate-messag {
+         display: none;
+       }
+      
+
+          @media (max-width: 1024px) and (orientation: portrait) {
+            body.portrait {
+    height: 25vh;
+            margin: calc(50vh - 25%) 0;
+  }
+            .rotate-message {
+        position: absolute;
+        top: calc(50vh - 20%);
+        text-align: center;
+        color: lightskyblue;
+        font-size: 12px;
+        font-family: monospace;
+      }
+
+      .rotate-message p, .rotate-message h3 {
+        padding: 2px 0;
+        margi
+          }
     </style>
   </head>
   <body>
+    <div class="rotate-message">
+  <div>
+    <h3>Rotate your phone</h3>
+    <p>
+      Nightclub Jitters is best experienced in landscape
+    </p>
+  </div>
+</div>
     <div class="frame">
       <div class="canvas-wrapper">
         <canvas id="field"></canvas>
@@ -809,6 +841,23 @@
       window.addEventListener("resize", () => {
         startAnimation(false);
       });
+
+      function updateOrientationClass() {
+  const isPortrait = window.innerHeight > window.innerWidth;
+  if (isPortrait) {
+    document.body.classList.add("portrait");
+    document.body.classList.remove("landscape");
+  } else {
+    document.body.classList.add("landscape");
+    document.body.classList.remove("portrait");
+  }
+}
+
+window.addEventListener("resize", updateOrientationClass);
+window.addEventListener("orientationchange", updateOrientationClass);
+
+// call once on load
+updateOrientationClass();
 
       startAnimation(true);
     </script>
