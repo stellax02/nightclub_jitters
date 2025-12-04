@@ -72,11 +72,11 @@
 
           @media (max-width: 1024px) and (orientation: portrait) {
             body.portrait {
-    height: 25vh;
+            height: 25vh;
             margin: calc(50vh - 25%) 0;
-  }
-            .rotate-message {
-        position: absolute;
+           }
+         body.portrait .rotate-message {
+       position: absolute;
         top: calc(50vh - 25%);
         text-align: center;
         color: lightskyblue;
@@ -84,7 +84,8 @@
         font-family: monospace;
       }
 
-      .rotate-message p, .rotate-message h3 {
+      body.portrait .rotate-message p, 
+      body.portrait .rotate-message h3 {
         padding: 2px 0;
         margi
           }
